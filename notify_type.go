@@ -42,10 +42,10 @@ type TradeNotification struct {
 }
 
 func (this *AliPay) GetTradeNotification(req *http.Request) (*TradeNotification, error) {
-	return GetTradeNotification(req, this.AliPayPublicKey)
+	return GetTradeNotification(req)
 }
 
-func GetTradeNotification(req *http.Request, aliPayPublicKey []byte) (noti *TradeNotification, err error) {
+func GetTradeNotification(req *http.Request) (noti *TradeNotification, err error) {
 	if req == nil {
 		return nil, errors.New("request 参数不能为空")
 	}
@@ -89,7 +89,7 @@ func GetTradeNotification(req *http.Request, aliPayPublicKey []byte) (noti *Trad
 		return nil, errors.New("不是有效的 Notify")
 	}
 
-	ok, err := verifySign(req, aliPayPublicKey)
+	ok, err := verifySign(req)
 	if ok {
 		return noti, nil
 	}

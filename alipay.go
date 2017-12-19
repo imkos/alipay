@@ -4,220 +4,182 @@ import (
 	"crypto"
 	"encoding/base64"
 	"encoding/json"
-	"io"
+	"errors"
+	"github.com/smartwalle/alipay/encoding"
+	"github.com/tidwall/gjson"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"time"
+)
 
-	"github.com/smartwalle/alipay/encoding"
+var (
+	RSA  = &RSA_sign{sign_type: K_SIGN_TYPE_RSA, hash: crypto.SHA1}
+	RSA2 = &RSA_sign{sign_type: K_SIGN_TYPE_RSA2, hash: crypto.SHA256}
 )
 
 type AliPay struct {
-	appId           string
-	apiDomain       string
-	partnerId       string
-	publicKey       []byte
-	privateKey      []byte
-	AliPayPublicKey []byte
-	client          *http.Client
-	SignType        string
+	appId     string
+	apiDomain string
+	partnerId string
+	client    *http.Client
+	Signer    AliSign
 }
 
-func New(appId, partnerId string, publicKey, privateKey []byte, isProduction bool) (client *AliPay) {
-	client = &AliPay{}
-	client.appId = appId
-	client.partnerId = partnerId
-	client.privateKey = privateKey
-	client.publicKey = publicKey
-	client.client = http.DefaultClient
-	if isProduction {
-		client.apiDomain = K_ALI_PAY_PRODUCTION_API_URL
-	} else {
-		client.apiDomain = K_ALI_PAY_SANDBOX_API_URL
+//此方法一般一个开发者对象只需调用一次，调用后全局的RSA,RSA2的sig都会同样初始
+func NewAliPay(s_appId, s_partnerId string, sg *encoding.SignPKCS, isProduction bool) (*AliPay, error) {
+	if sg == nil {
+		return nil, errors.New("*SignPKCS is nil")
 	}
-	client.SignType = K_SIGN_TYPE_RSA2
-	return client
+	cli := &AliPay{
+		appId:     s_appId,
+		partnerId: s_partnerId,
+		client:    &http.Client{},
+	}
+	if isProduction {
+		cli.apiDomain = K_ALI_PAY_PRODUCTION_API_URL
+	} else {
+		cli.apiDomain = K_ALI_PAY_SANDBOX_API_URL
+	}
+	RSA.sig = sg
+	RSA2.sig = sg
+	//默认采用RSA2, 如需使用RSA,在New..后面重新指定RSA
+	cli.Signer = RSA2
+	return cli, nil
 }
 
-func (this *AliPay) URLValues(param AliPayParam) (value url.Values, err error) {
-	var p = url.Values{}
-	p.Add("app_id", this.appId)
+func (ap *AliPay) URLValues(param AliPayParam) (value url.Values, err error) {
+	p := url.Values{}
+	p.Add("app_id", ap.appId)
 	p.Add("method", param.APIName())
 	p.Add("format", K_FORMAT)
 	p.Add("charset", K_CHARSET)
-	p.Add("sign_type", this.SignType)
+	p.Add("sign_type", ap.Signer.Get_Signtype())
 	p.Add("timestamp", time.Now().Format(K_TIME_FORMAT))
 	p.Add("version", K_VERSION)
-
 	if len(param.ExtJSONParamName()) > 0 {
 		p.Add(param.ExtJSONParamName(), param.ExtJSONParamValue())
 	}
-
-	var ps = param.Params()
+	ps := param.Params()
 	if ps != nil {
 		for key, value := range ps {
 			p.Add(key, value)
 		}
 	}
-
-	var keys = make([]string, 0, 0)
-	for key, _ := range p {
-		keys = append(keys, key)
+	s_keys := make([]string, 0)
+	for key := range p {
+		s_keys = append(s_keys, key)
 	}
-
-	sort.Strings(keys)
-
-	var sign string
-	if this.SignType == K_SIGN_TYPE_RSA {
-		sign, err = signRSA(keys, p, this.privateKey)
-	} else {
-		sign, err = signRSA2(keys, p, this.privateKey)
-	}
-	p.Add("sign", sign)
-
+	sort.Strings(s_keys)
+	sign, err := ap.Signer.Sign(s_keys, p)
 	if err != nil {
 		return nil, err
 	}
+	p.Add("sign", sign)
 	return p, nil
 }
 
-func (this *AliPay) doRequest(method string, param AliPayParam, results interface{}) (err error) {
-	var buf io.Reader
-	if param != nil {
-		p, err := this.URLValues(param)
-		if err != nil {
-			return err
-		}
-		buf = strings.NewReader(p.Encode())
+func (ap *AliPay) doRequest(method string, param AliPayParam, results interface{}) (err error) {
+	if param == nil {
+		return errors.New("AliPayParam is nil!")
 	}
-
-	req, err := http.NewRequest(method, this.apiDomain, buf)
+	p, err := ap.URLValues(param)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(method, ap.apiDomain, strings.NewReader(p.Encode()))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded;charset=utf-8")
-
-	resp, err := this.client.Do(req)
-	if resp != nil {
-		defer resp.Body.Close()
-	}
+	resp, err := ap.client.Do(req)
 	if err != nil {
 		return err
 	}
-
+	defer resp.Body.Close()
 	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
-
-	if len(this.AliPayPublicKey) > 0 {
-		var dataStr = string(data)
-
-		var rootNodeName = strings.Replace(param.APIName(), ".", "_", -1) + k_RESPONSE_SUFFIX
-
-		var rootIndex = strings.LastIndex(dataStr, rootNodeName)
-		var errorIndex = strings.LastIndex(dataStr, k_ERROR_RESPONSE)
-
-		var content string
-		var sign string
-
-		if rootIndex > 0 {
-			content, sign = parserJSONSource(dataStr, rootNodeName, rootIndex)
-		} else if errorIndex > 0 {
-			content, sign = parserJSONSource(dataStr, k_ERROR_RESPONSE, errorIndex)
-		} else {
-			return nil
-		}
-
-		if ok, err := verifyResponseData([]byte(content), this.SignType, sign, this.AliPayPublicKey); ok == false {
+	if ap.Signer.CanVerify() {
+		rootNodeName := strings.Replace(param.APIName(), ".", "_", -1) + k_RESPONSE_SUFFIX
+		gj := gjson.ParseBytes(data)
+		if err := ap.Signer.VerifyResponseData([]byte(gj.Get(rootNodeName).Raw), gj.Get("sign").Str); err != nil {
 			return err
 		}
 	}
+	return json.Unmarshal(data, results)
+}
 
-	err = json.Unmarshal(data, results)
+func (ap *AliPay) DoRequest(method string, param AliPayParam, results interface{}) (err error) {
+	return ap.doRequest(method, param, results)
+}
+
+//AliPay签名
+type AliSign interface {
+	Get_Signtype() string
+	Sign(keys []string, param url.Values) (string, error)
+	CanVerify() bool
+	VerifyResponseData(data []byte, sign string) error
+}
+
+type RSA_sign struct {
+	sig       *encoding.SignPKCS
+	sign_type string
+	hash      crypto.Hash
+}
+
+func (r *RSA_sign) Get_Signtype() string {
+	return r.sign_type
+}
+
+func (r *RSA_sign) Sign(keys []string, param url.Values) (string, error) {
+	if r.sig == nil {
+		return "", errors.New("*SignPKCS is nil!")
+	}
+	//如两个参数出现空值直接返回
+	if keys == nil || param == nil {
+		return "", nil
+	}
+	pList := make([]string, 0, 0)
+	for _, key := range keys {
+		value := strings.TrimSpace(param.Get(key))
+		if len(value) > 0 {
+			pList = append(pList, key+"="+value)
+		}
+	}
+	src := strings.Join(pList, "&")
+	sig, err := r.sig.SignPKCS1v15([]byte(src), r.hash)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(sig), nil
+}
+
+func (p *RSA_sign) CanVerify() bool {
+	if p.sig == nil {
+		return false
+	}
+	return p.sig.CanVerify()
+}
+
+func (r *RSA_sign) VerifyResponseData(data []byte, sign string) error {
+	signBytes, err := base64.StdEncoding.DecodeString(sign)
 	if err != nil {
 		return err
 	}
-
-	return err
+	return r.sig.VerifyPKCS1v15(data, signBytes, r.hash)
 }
 
-func (this *AliPay) DoRequest(method string, param AliPayParam, results interface{}) (err error) {
-	return this.doRequest(method, param, results)
-}
-
-func parserJSONSource(rawData string, nodeName string, nodeIndex int) (content string, sign string) {
-	var dataStartIndex = nodeIndex + len(nodeName) + 2
-	var signIndex = strings.LastIndex(rawData, "\""+k_SIGN_NODE_NAME+"\"")
-	var dataEndIndex = signIndex - 1
-
-	var indexLen = dataEndIndex - dataStartIndex
-	if indexLen < 0 {
-		return "", ""
-	}
-	content = rawData[dataStartIndex:dataEndIndex]
-
-	var signStartIndex = signIndex + len(k_SIGN_NODE_NAME) + 4
-	sign = rawData[signStartIndex:]
-	var signEndIndex = strings.LastIndex(sign, "\"}")
-	sign = sign[:signEndIndex]
-
-	return content, sign
-}
-
-func signRSA2(keys []string, param url.Values, privateKey []byte) (s string, err error) {
-	if param == nil {
-		param = make(url.Values, 0)
-	}
-
-	var pList = make([]string, 0, 0)
-	for _, key := range keys {
-		var value = strings.TrimSpace(param.Get(key))
-		if len(value) > 0 {
-			pList = append(pList, key+"="+value)
-		}
-	}
-	var src = strings.Join(pList, "&")
-	sig, err := encoding.SignPKCS1v15([]byte(src), privateKey, crypto.SHA256)
-	if err != nil {
-		return "", err
-	}
-	s = base64.StdEncoding.EncodeToString(sig)
-	return s, nil
-}
-
-func signRSA(keys []string, param url.Values, privateKey []byte) (s string, err error) {
-	if param == nil {
-		param = make(url.Values, 0)
-	}
-
-	var pList = make([]string, 0, 0)
-	for _, key := range keys {
-		var value = strings.TrimSpace(param.Get(key))
-		if len(value) > 0 {
-			pList = append(pList, key+"="+value)
-		}
-	}
-	var src = strings.Join(pList, "&")
-	sig, err := encoding.SignPKCS1v15([]byte(src), privateKey, crypto.SHA1)
-	if err != nil {
-		return "", err
-	}
-	s = base64.StdEncoding.EncodeToString(sig)
-	return s, nil
-}
-
-func verifySign(req *http.Request, key []byte) (ok bool, err error) {
+func verifySign(req *http.Request) (ok bool, err error) {
 	sign, err := base64.StdEncoding.DecodeString(req.PostForm.Get("sign"))
 	signType := req.PostForm.Get("sign_type")
 	if err != nil {
 		return false, err
 	}
-
-	var keys = make([]string, 0, 0)
+	keys := make([]string, 0)
 	for key, value := range req.PostForm {
 		if key == "sign" || key == "sign_type" {
 			continue
@@ -226,39 +188,23 @@ func verifySign(req *http.Request, key []byte) (ok bool, err error) {
 			keys = append(keys, key)
 		}
 	}
-
 	sort.Strings(keys)
-
-	var pList = make([]string, 0, 0)
+	pList := make([]string, 0)
 	for _, key := range keys {
-		var value = strings.TrimSpace(req.PostForm.Get(key))
+		value := strings.TrimSpace(req.PostForm.Get(key))
 		if len(value) > 0 {
 			pList = append(pList, key+"="+value)
 		}
 	}
-	var s = strings.Join(pList, "&")
-
+	s := strings.Join(pList, "&")
 	if signType == K_SIGN_TYPE_RSA {
-		err = encoding.VerifyPKCS1v15([]byte(s), sign, key, crypto.SHA1)
+		if RSA.CanVerify() {
+			err = RSA.sig.VerifyPKCS1v15([]byte(s), sign, crypto.SHA1)
+		}
 	} else {
-		err = encoding.VerifyPKCS1v15([]byte(s), sign, key, crypto.SHA256)
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func verifyResponseData(data []byte, signType, sign string, key []byte) (ok bool, err error) {
-	signBytes, err := base64.StdEncoding.DecodeString(sign)
-	if err != nil {
-		return false, err
-	}
-
-	if signType == K_SIGN_TYPE_RSA {
-		err = encoding.VerifyPKCS1v15(data, signBytes, key, crypto.SHA1)
-	} else {
-		err = encoding.VerifyPKCS1v15(data, signBytes, key, crypto.SHA256)
+		if RSA2.CanVerify() {
+			err = RSA2.sig.VerifyPKCS1v15([]byte(s), sign, crypto.SHA256)
+		}
 	}
 	if err != nil {
 		return false, err

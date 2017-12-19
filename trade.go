@@ -76,7 +76,7 @@ func (this *AliPay) TradeCreate(param AliPayTradeCreate) (results *AliPayTradeCr
 }
 
 // TradePay https://doc.open.alipay.com/docs/api.htm?spm=a219a.7395905.0.0.6jrv8J&docType=4&apiId=850
-func (this *AliPay) TradePay(param AliPayTradePay) (results *AliPayTradePayResponse, err error) {
+func (this *AliPay) TradePay(param *AliPayTradePay) (results *AliPayTradePayResponse, err error) {
 	err = this.doRequest("POST", param, &results)
 	return results, err
 }
