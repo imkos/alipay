@@ -16,63 +16,63 @@ AliPay SDK for Golang
 #### 手机网站支付API
 
 * **手机网站支付接口**
-	
-	alipay.trade.wap.pay
-	
+
+  alipay.trade.wap.pay
+
 * **电脑网站支付**
 
-	alipay.trade.page.pay
+  alipay.trade.page.pay
 
 * **统一收单线下交易查询**
-	
-	alipay.trade.query
-	
+
+  alipay.trade.query
+
 * **统一收单交易支付接口**
-	
-	alipay.trade.pay
-	
+
+  alipay.trade.pay
+
 * **统一收单交易创建接口**
 
-	alipay.trade.create
-	
+  alipay.trade.create
+
 * **统一收单线下交易预创建**
 
-	alipay.trade.precreate
-	
+  alipay.trade.precreate
+
 * **统一收单交易撤销接口**
 
-	alipay.trade.cancel
-	
+  alipay.trade.cancel
+
 * **统一收单交易关闭接口**
 
-	alipay.trade.close
+  alipay.trade.close
 
 * **统一收单交易退款接口**
 
-	alipay.trade.refund
-	
+  alipay.trade.refund
+
 * **App支付接口**
 
-	alipay.trade.app.pay
+  alipay.trade.app.pay
 
 * **统一收单交易退款查询**
 
-	alipay.trade.fastpay.refund.query
+  alipay.trade.fastpay.refund.query
 
 * **单笔转账到支付宝账户接口**
 
-	alipay.fund.trans.toaccount.transfer
-	
+  alipay.fund.trans.toaccount.transfer
+
 * **查询转账订单接口**
 
-	alipay.fund.trans.order.query 
-	
+  alipay.fund.trans.order.query 
+
 #### 通知
-	
+
 * **通知内容转换及签名验证**
-	
-	将支付宝的通知内容转换为 Golang 的结构体，并且验证其合法性。
-	
+
+  将支付宝的通知内容转换为 Golang 的结构体，并且验证其合法性。
+
 ## 集成流程
 
 从[支付宝开放平台](https://open.alipay.com/)申请创建相关的应用，使用自己的支付宝账号登录即可。
@@ -91,20 +91,107 @@ AliPay SDK for Golang
 
 请参考 [如何生成 RSA 密钥](https://doc.open.alipay.com/docs/doc.htm?treeId=291&articleId=105971&docType=1)。
 
-#### 创建 Wap 支付
+#### Example:
 
-``` Golang
-var client = alipay.New(appId, partnerId, publickKey, privateKey, false)
+``` go
+package main
 
-var p = AliPayTradeWapPay{}
-p.NotifyURL = "xxx"
-p.Subject = "标题"
-p.OutTradeNo = "传递一个唯一单号"
-p.TotalAmount = "10.00"
-p.ProductCode = "商品编码"
+import (
+	"bufio"
+	"bytes"
+	"fmt"
+	"github.com/imkos/alipay"
+	"github.com/imkos/alipay/encoding"
+	"os"
+)
 
-var url, _ = client.TradeWapPay(p)
-// 直接访问该 URL 就可以了
+const (
+	PRI_BEGIN = "-----BEGIN RSA PRIVATE KEY-----"
+	PRI_END   = "-----END RSA PRIVATE KEY-----"
+	//
+	PUB_BEGIN = "-----BEGIN RSA PUBLIC KEY-----"
+	PUB_END   = "-----END RSA PUBLIC KEY-----"
+)
+
+//判断文件或文件夹是否存在
+func Exist(filename string) bool {
+	_, err := os.Stat(filename)
+	return err == nil || os.IsExist(err)
+}
+
+func loadfromfile(s_file string, b_bstr, b_estr []byte) []byte {
+	b_file, e1 := os.Open(s_file)
+	if e1 != nil {
+		return nil
+	}
+	defer b_file.Close()
+	br := bufio.NewReader(b_file)
+	buf := bytes.NewBuffer(b_bstr)
+	buf.WriteByte(10)
+	buf_line := make([]byte, 64)
+	for {
+		n, err := br.Read(buf_line)
+		if err != nil {
+			break
+		}
+		if n < 64 {
+			buf.Write(buf_line[:n])
+		} else {
+			buf.Write(buf_line)
+		}
+		buf.WriteByte(10)
+	}
+	buf.Write(b_estr)
+	return buf.Bytes()
+}
+
+func prikfromfile(s_file string) []byte {
+	if !Exist(s_file) {
+		return nil
+	}
+	return loadfromfile(s_file, []byte(PRI_BEGIN), []byte(PRI_END))
+}
+
+func pubkfromfile(s_file string) []byte {
+	if !Exist(s_file) {
+		return nil
+	}
+	return loadfromfile(s_file, []byte(PUB_BEGIN), []byte(PUB_END))
+}
+
+func main() {
+	sig, e0 := encoding.NewSignPKCS(prikfromfile("prik.txt"), pubkfromfile("alipubk.txt"), 8)
+	if e0 != nil {
+		fmt.Println(e0)
+		return
+	}
+	ap, e1 := alipay.NewAliPay("2017121800******", "", sig, true)
+	if e1 != nil {
+		fmt.Println(e1)
+		return
+	}
+	gdi := &alipay.GoodsDetailItem{
+		GoodsId:   "10002001",
+		GoodsName: "文具",
+		Quantity:  1,
+		Price:     0.01,
+	}
+	pay_param := &alipay.AliPayTradePay{
+		OutTradeNo:     "20171218010101001",
+		Scene:          "bar_code",
+		AuthCode:       "2871131954465*****",
+		Subject:        "自营收款",
+		Body:           "trade pay test",
+		TimeoutExpress: "90m",
+		GoodsDetail:    []*alipay.GoodsDetailItem{gdi},
+	}
+	var pay_resp alipay.AliPayTradePayResponse
+	if e2 := ap.DoRequest("POST", pay_param, &pay_resp); e2 != nil {
+		fmt.Println(e2)
+		return
+	}
+	fmt.Println(pay_resp)
+}
 ```
 
 #### 同步返回验签
