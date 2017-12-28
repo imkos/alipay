@@ -201,8 +201,7 @@ func main() {
 如果需要开启自动验签，只需要在初始化 AliPay 对象之后给 **AliPayPublicKey** 属性设置从支付宝管理后台获取到的支付宝公钥即可，如下：
 
 ``` Golang
-var client = alipay.New(appId, partnerId, publickKey, privateKey, false)
-client.AliPayPublicKey = xxx  // 从支付宝管理后台获取支付宝提供的公钥
+encoding.NewSignPKCS（...） 初始时可以对公钥进行赋nil,表示不验回调或返回的sign
 ```
 
 #### 验证支付结果
@@ -243,11 +242,11 @@ hwIDAQAB
 ```
 
 #### 支持 RSA 签名及验证
-默认采用的是 RSA2 签名，如果需要使用 RSA 签名，只需要在初始化 AliPay 的时候，将其 SignType 设置为 alipay.K\_SIGN\_TYPE\_RSA 即可:
+默认采用的是 RSA2 签名，如果需要使用 RSA 签名，只需要在初始化 AliPay 的时候，将其 Signer设置为 alipay.RSA 即可:
 
 ```Golang
-var client = alipay.New(appId, partnerId, publickKey, privateKey, false)
-client.SignType = alipay.K_SIGN_TYPE_RSA
+var client = alipay.NewAliPay(....)
+client.Signer = alipay.RSA
 ```
 
 当然，相关的 Key 也要注意替换。
