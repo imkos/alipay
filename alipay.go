@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"github.com/smartwalle/alipay/encoding"
+	"github.com/imkos/alipay/encoding"
 	"github.com/tidwall/gjson"
 	"io/ioutil"
 	"net/http"
